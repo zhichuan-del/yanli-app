@@ -1,6 +1,6 @@
 # 研历 YanLi · Android 原型
 
-这是参考 [Caledoro](https://github.com/choonhows/Caledoro) 的日历与任务交互，为科研场景重新编写的 Flutter 应用。首版面向个人离线使用，数据保存在当前设备，没有账号和云同步。
+这是为科研场景重新编写的 Flutter 应用。首版面向个人离线使用，数据保存在当前设备，没有账号和云同步。
 
 ## 功能展示
 
