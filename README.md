@@ -2,6 +2,20 @@
 
 这是参考 [Caledoro](https://github.com/choonhows/Caledoro) 的日历与任务交互，为科研场景重新编写的 Flutter 应用。首版面向个人离线使用，数据保存在当前设备，没有账号和云同步。
 
+## 功能展示
+
+以下为应用实际界面，记录内容均为虚构示例。
+
+| 日历与计划 | 科研进展 | 导师交流与跟进 |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/calendar.jpg" alt="日历与计划界面" width="260"> | <img src="docs/screenshots/progress.jpg" alt="科研进展与搜索界面" width="260"> | <img src="docs/screenshots/mentor.jpg" alt="导师交流和跟进状态界面" width="260"> |
+| 按日期查看计划、进展和交流。 | 记录科研工作，并支持搜索和筛选。 | 记录反馈，跟踪事项状态并转为计划。 |
+
+| 周报总结 | 语音输入入口 |
+| :---: | :---: |
+| <img src="docs/screenshots/report.jpg" alt="科研周报和总结初稿界面" width="260"> | <img src="docs/screenshots/voice-entry.jpg" alt="交流记录表单中的语音输入入口" width="260"> |
+| 根据已有记录生成可编辑的总结初稿。 | 点击输入框旁的麦克风进行语音输入；支持情况取决于设备和运行环境。 |
+
 ## 已实现
 
 - 首页默认显示月历与所选日期的日程；可切换周视图、查看不同类型标记、所选周计划数及完成率、返回今天。切换月份后若未选日期就收起，将显示该月第一天所在的周。
