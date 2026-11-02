@@ -1,0 +1,8 @@
+研历 YanLi 的界面和日历任务交互参考 Caledoro：https://github.com/choonhows/Caledoro 。
+本原型的业务和界面代码为重新编写，并非 Caledoro 源码的完整复制。
+Caledoro 原项目采用 MIT License，Copyright (c) 2026 Chrislyr Tan。
+
+Mac 本机语音识别使用 sherpa-onnx（Apache-2.0）：https://github.com/k2-fsa/sherpa-onnx 。
+SenseVoice 模型来源：https://github.com/FunAudioLLM/SenseVoice （MIT，Copyright (c) 2025 FunASR）。
+默认中文识别模型为 FunASR Paraformer（Apache-2.0），来源：https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14 。
+相关许可文本保存在 tools/licenses/，运行时依赖保留其各自许可。

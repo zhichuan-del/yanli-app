@@ -1,0 +1,7 @@
+{
+  "name": "yanli-local-voice",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test voice_server.test.mjs" },
+  "dependencies": { "sherpa-onnx-node": "2.0.1" }
+}

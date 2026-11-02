@@ -1,0 +1,100 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:yanli_app/domain.dart';
+import 'package:yanli_app/main.dart';
+import 'package:yanli_app/record_details.dart';
+import 'package:yanli_app/scrolling_calendar.dart';
+
+void main() {
+  testWidgets('切换标签保留月历滚动月份、日面板高度和周报所选周', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.pumpWidget(YanliApp(prefs: await SharedPreferences.getInstance()));
+    await tester.pumpAndSettle();
+    final calendarScroll = find.descendant(of: find.byType(ScrollingCalendar), matching: find.byType(Scrollable));
+    final calendarPosition = tester.state<ScrollableState>(calendarScroll).position;
+    calendarPosition.jumpTo(calendarPosition.pixels + 1200);
+    final agenda = tester.widget<DraggableScrollableSheet>(find.byKey(const ValueKey('calendar-agenda-sheet'))).controller!;
+    agenda.jumpTo(.6);
+    await tester.pumpAndSettle();
+    final offset = calendarPosition.pixels;
+    await tester.tap(find.text('周报'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('上一周'));
+    await tester.pumpAndSettle();
+    final reportStart = weekStart(DateTime.now()).subtract(const Duration(days: 7));
+    final range = '${dateLabel(reportStart)}  —  ${dateLabel(reportStart.add(const Duration(days: 6)))}';
+    expect(find.text(range), findsNWidgets(2));
+    await tester.tap(find.text('日历'));
+    await tester.pumpAndSettle();
+    expect(tester.state<ScrollableState>(calendarScroll).position.pixels, offset);
+    expect(agenda.size, closeTo(.6, .001));
+    await tester.tap(find.text('周报'));
+    await tester.pumpAndSettle();
+    expect(find.text(range), findsNWidgets(2));
+  });
+
+  testWidgets('详情来源删除后显示空态且不会写回记录', (tester) async {
+    ResearchRecord? record = ResearchRecord(id: 'p', kind: RecordKind.progress, date: DateTime.now(), title: '原记录');
+    final revision = ValueNotifier(0);
+    await tester.pumpWidget(MaterialApp(home: RecordDetails(recordId: 'p', lookup: (_) => record,
+      revision: revision, onEdit: (_) async {}, onOpenSource: (_) async {})));
+    expect(find.text('原记录'), findsOneWidget);
+    record = null;
+    revision.value++;
+    await tester.pump();
+    expect(find.text('记录已删除，可返回列表或到回收站恢复'), findsOneWidget);
+    expect(find.text('编辑'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    revision.dispose();
+  });
+
+  testWidgets('卡片先只读详情，编辑保存刷新，返回仍保留搜索与标签位置', (tester) async {
+    final record = ResearchRecord(id: 'p', kind: RecordKind.progress, date: DateTime.now(), title: '目标进展', detail: '完整正文', problem: '完整问题', next: '完整下一步');
+    SharedPreferences.setMockInitialValues({'yanli_records_v1': encodeBackup([record])});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(YanliApp(prefs: prefs));
+    await tester.tap(find.text('进展'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '目标');
+    await tester.tap(find.text('筛选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全部类型'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('其他活动').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('筛选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('交流'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '老师');
+    await tester.tap(find.text('进展'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, '目标');
+    expect(find.text('类型：其他活动'), findsOneWidget);
+    await tester.ensureVisible(find.text('目标进展'));
+    await tester.pumpAndSettle();
+    final position = tester.getTopLeft(find.text('目标进展'));
+    final before = prefs.getString('yanli_records_v1');
+    await tester.tap(find.text('目标进展'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RecordDetails), findsOneWidget);
+    expect(find.byType(RecordEditor), findsNothing);
+    expect(prefs.getString('yanli_records_v1'), before);
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '目标进展已更新');
+    await tester.ensureVisible(find.text('保存科研进展'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存科研进展'));
+    await tester.pumpAndSettle();
+    expect(find.text('目标进展已更新'), findsOneWidget);
+    expect(find.byType(RecordEditor), findsNothing);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(find.text('目标进展已更新')), position);
+    await tester.tap(find.text('交流'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, '老师');
+  });
+}
