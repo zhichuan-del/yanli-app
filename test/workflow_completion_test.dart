@@ -19,7 +19,7 @@ ResearchRecord discussion() => ResearchRecord(
 );
 
 void main() {
-  testWidgets('月历真实密度保留类别点与所选日计数', (tester) async {
+  testWidgets('月历真实密度保留类别图标与所选日计数', (tester) async {
     final date = dayOnly(DateTime.now());
     final rows = [
       for (var i = 0; i < 7; i++)
@@ -403,6 +403,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('转为计划'));
     await tester.tap(find.text('转为计划'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('mentor-plan-confirm')));
     await tester.pumpAndSettle();
     expect(decodeBackup(prefs.getString('yanli_records_v1')!).length, 2);
     await tester.ensureVisible(find.text('查看关联计划'));

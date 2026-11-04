@@ -75,6 +75,41 @@ void main() {
         expect(tester.widget<TextField>(field).readOnly, isFalse);
         await tester.enterText(field, numeric ? '20' : '键盘继续输入');
         expect(widget.controller!.text, numeric ? '20' : '键盘继续输入');
+
+        final editable = find.descendant(
+          of: field,
+          matching: find.byType(EditableText),
+        );
+        final render = tester.state<EditableTextState>(editable).renderEditable;
+        final caret = render.getLocalRectForCaret(
+          const TextPosition(offset: 1),
+        );
+        await tester.tapAt(render.localToGlobal(caret.center));
+        await tester.pump();
+        expect(widget.controller!.selection.extentOffset, 1);
+
+        final original = widget.controller!.text;
+        final inserted = numeric ? '5' : '新';
+        tester.testTextInput.updateEditingValue(
+          TextEditingValue(
+            text:
+                '${original.substring(0, 1)}$inserted${original.substring(1)}',
+            selection: const TextSelection.collapsed(offset: 2),
+          ),
+        );
+        await tester.pump();
+        expect(
+          widget.controller!.text,
+          '${original.substring(0, 1)}$inserted${original.substring(1)}',
+        );
+        tester.testTextInput.updateEditingValue(
+          TextEditingValue(
+            text: original,
+            selection: const TextSelection.collapsed(offset: 1),
+          ),
+        );
+        await tester.pump();
+        expect(widget.controller!.text, original);
       }
       expect(tester.takeException(), isNull);
     });

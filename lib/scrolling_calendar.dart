@@ -19,6 +19,148 @@ const _monthNames = [
 ];
 const _red = Color(0xffd93025);
 const _muted = Color(0xff6c6c70);
+const _calendarMarkers = [
+  (RecordKind.task, Icons.check_circle_outline, _red, '计划记录', '有计划'),
+  (
+    RecordKind.progress,
+    Icons.auto_stories_outlined,
+    Color(0xff007aff),
+    '科研进展',
+    '有进展',
+  ),
+  (RecordKind.mentor, Icons.forum_outlined, Color(0xffaf52de), '导师交流', '有导师交流'),
+];
+
+String calendarRecordKindSemantics(Set<RecordKind> kinds) => [
+  for (final entry in _calendarMarkers)
+    if (kinds.contains(entry.$1)) '，${entry.$5}',
+].join();
+
+class CalendarMarkerLegend extends StatefulWidget {
+  const CalendarMarkerLegend({
+    super.key,
+    this.keyPrefix = 'calendar',
+    this.compact = false,
+    this.onLayout,
+  });
+
+  final String keyPrefix;
+  final bool compact;
+
+  /// Called after the first layout and after viewport or text-scale changes.
+  final ValueChanged<BuildContext>? onLayout;
+
+  @override
+  State<CalendarMarkerLegend> createState() => _CalendarMarkerLegendState();
+}
+
+class _CalendarMarkerLegendState extends State<CalendarMarkerLegend> {
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (widget.onLayout == null) return;
+    MediaQuery.sizeOf(context);
+    MediaQuery.textScalerOf(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onLayout?.call(context);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.compact
+      ? Row(
+          key: ValueKey('${widget.keyPrefix}-marker-legend'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final entry in _calendarMarkers)
+              Expanded(
+                child: Column(
+                  key: ValueKey('${widget.keyPrefix}-legend-${entry.$1.name}'),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(entry.$2, color: entry.$3, size: 16),
+                    Text(
+                      entry.$4,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        )
+      : LayoutBuilder(
+          builder: (context, constraints) => Wrap(
+            key: ValueKey('${widget.keyPrefix}-marker-legend'),
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              for (final entry in _calendarMarkers)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                  child: Row(
+                    key: ValueKey(
+                      '${widget.keyPrefix}-legend-${entry.$1.name}',
+                    ),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        entry.$2,
+                        color: entry.$3,
+                        size: MediaQuery.textScalerOf(
+                          context,
+                        ).scale(14).clamp(0.0, constraints.maxWidth / 2),
+                      ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          entry.$4,
+                          style: const TextStyle(color: _muted, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        );
+}
+
+class CalendarRecordMarkers extends StatelessWidget {
+  const CalendarRecordMarkers({
+    super.key,
+    required this.date,
+    required this.kinds,
+    this.keyPrefix = 'calendar-dot',
+  });
+
+  final DateTime date;
+  final Set<RecordKind> kinds;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 12,
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final entry in _calendarMarkers)
+            if (kinds.contains(entry.$1))
+              Icon(
+                entry.$2,
+                key: ValueKey(
+                  '$keyPrefix-${date.year}-${date.month}-${date.day}-${entry.$1.name}',
+                ),
+                color: entry.$3,
+                size: 12,
+              ),
+        ],
+      ),
+    ),
+  );
+}
 
 /// A bounded viewport over lazily built months, with a stationary toolbar.
 class ScrollingCalendar extends StatefulWidget {
@@ -62,6 +204,7 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
   List<double> _offsets = [];
   double _rowHeight = 0;
   double _titleHeight = 0;
+  int _metricsRevision = 0;
   DateTime? _localSelection;
 
   int get _monthCount => (_lastYear - _firstYear + 1) * 12;
@@ -78,13 +221,40 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _updateMetrics();
+  }
+
+  bool _updateMetrics({
+    bool preservePosition = false,
+    bool scheduleJump = true,
+  }) {
     final scaler = MediaQuery.textScalerOf(context);
     final rowHeight =
         26 +
         scaler.scale(22) +
         (widget.recordCounts.isEmpty ? 0 : scaler.scale(12));
     final titleHeight = 18 + scaler.scale(18);
-    if (_rowHeight == rowHeight && _titleHeight == titleHeight) return;
+    if (_rowHeight == rowHeight && _titleHeight == titleHeight) return false;
+    final controller = _controller;
+    final month = _visibleMonth;
+    final previousOffset = controller != null && controller.hasClients
+        ? controller.offset
+        : null;
+    var withinMonth = preservePosition && previousOffset != null
+        ? previousOffset - _offsets[_index(month)]
+        : 0.0;
+    // Keep the same visible week when record counts change the row height.
+    if (withinMonth > _titleHeight && _rowHeight > 0) {
+      final rowsOffset = (withinMonth - _titleHeight).clamp(
+        0.0,
+        _rows(month) * _rowHeight,
+      );
+      withinMonth =
+          titleHeight +
+          rowsOffset * rowHeight / _rowHeight +
+          (withinMonth - _titleHeight - rowsOffset);
+    }
+    final revision = ++_metricsRevision;
     _rowHeight = rowHeight;
     _titleHeight = titleHeight;
     _offsets = [0];
@@ -93,15 +263,31 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
         _offsets.last + _titleHeight + _rows(_monthAt(i)) * _rowHeight + 12,
       );
     }
-    if (_controller == null) {
+    if (controller == null) {
       _controller = ScrollController(
         initialScrollOffset: _offsets[_index(_visibleMonth)],
       )..addListener(_onScroll);
-    } else {
+    } else if (scheduleJump) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _jumpToMonth(_visibleMonth);
+        if (!mounted || revision != _metricsRevision) return;
+        if (preservePosition && previousOffset != null) {
+          if (!controller.hasClients ||
+              _visibleMonth != month ||
+              controller.offset != previousOffset) {
+            return;
+          }
+          controller.jumpTo(
+            (_offsets[_index(month)] + withinMonth).clamp(
+              0.0,
+              controller.position.maxScrollExtent,
+            ),
+          );
+        } else {
+          _jumpToMonth(_visibleMonth);
+        }
       });
     }
+    return true;
   }
 
   @override
@@ -113,10 +299,30 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
     );
     final local = DateUtils.isSameDay(_localSelection, widget.selectedDate);
     _localSelection = null;
-    if ((changed ||
+    final navigate =
+        (changed ||
             oldWidget.navigationRevision != widget.navigationRevision) &&
-        !local) {
-      _jumpToMonth(widget.selectedDate);
+        !local;
+    final metricsChanged = _updateMetrics(
+      preservePosition: true,
+      scheduleJump: !navigate,
+    );
+    if (navigate) {
+      final target = widget.selectedDate;
+      _jumpToMonth(target);
+      if (metricsChanged) {
+        // The new scroll extent is available only after layout.
+        final revision = _metricsRevision;
+        final navigationRevision = widget.navigationRevision;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted &&
+              revision == _metricsRevision &&
+              navigationRevision == widget.navigationRevision &&
+              DateUtils.isSameDay(target, widget.selectedDate)) {
+            _jumpToMonth(target);
+          }
+        });
+      }
     }
   }
 
@@ -226,6 +432,10 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
                 ],
               ),
             ),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 6),
+              child: CalendarMarkerLegend(),
+            ),
             SizedBox(
               height: 30,
               child: Row(
@@ -321,9 +531,7 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
           '${date.year}年${date.month}月${date.day}日'
           '${today ? '，今天' : ''}'
           '${count == null ? '' : '，共$count条记录'}'
-          '${kinds.contains(RecordKind.task) ? '，有计划' : ''}'
-          '${kinds.contains(RecordKind.progress) ? '，有进展' : ''}'
-          '${kinds.contains(RecordKind.mentor) ? '，有导师交流' : ''}',
+          '${calendarRecordKindSemantics(kinds)}',
       child: ExcludeSemantics(
         child: InkWell(
           key: ValueKey('calendar-day-${date.year}-${date.month}-${date.day}'),
@@ -367,33 +575,8 @@ class _ScrollingCalendarState extends State<ScrollingCalendar> {
                   ),
                 ),
               ),
-              const SizedBox(height: 3),
-              SizedBox(
-                height: 5,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    for (final entry in const [
-                      (RecordKind.task, _red),
-                      (RecordKind.progress, Color(0xff007aff)),
-                      (RecordKind.mentor, Color(0xffaf52de)),
-                    ])
-                      if (kinds.contains(entry.$1))
-                        Container(
-                          key: ValueKey(
-                            'calendar-dot-${date.year}-${date.month}-${date.day}-${entry.$1.name}',
-                          ),
-                          width: 4,
-                          height: 4,
-                          margin: const EdgeInsets.symmetric(horizontal: 2),
-                          decoration: BoxDecoration(
-                            color: entry.$2,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                  ],
-                ),
-              ),
+              const SizedBox(height: 2),
+              CalendarRecordMarkers(date: date, kinds: kinds),
               if (count != null && count > 0)
                 Text(
                   '$count条',

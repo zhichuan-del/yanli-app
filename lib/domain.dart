@@ -350,17 +350,66 @@ class WeeklyReport {
   }
 }
 
-String encodeBackup(List<ResearchRecord> records) => jsonEncode({
-  'version': 3,
-  'schemaVersion': 3,
-  'exportedAt': DateTime.now().toUtc().toIso8601String(),
-  'settings': <String, dynamic>{},
-  'records': records.map((r) => r.toJson()).toList(),
-});
-List<ResearchRecord> decodeBackup(String source) {
+class BackupSettings {
+  const BackupSettings({
+    required this.reminderEnabled,
+    required this.reminderMinutes,
+    required this.retentionDays,
+  });
+
+  static const maxRetentionDays = 3650;
+  final bool reminderEnabled;
+  final int reminderMinutes;
+  final int retentionDays;
+
+  Map<String, dynamic> toJson() => {
+    'reminderEnabled': reminderEnabled,
+    'reminderMinutes': reminderMinutes,
+    'retentionDays': retentionDays,
+  };
+
+  factory BackupSettings.fromJson(Map<dynamic, dynamic> data) {
+    final enabled = data['reminderEnabled'];
+    final minutes = data['reminderMinutes'];
+    final days = data['retentionDays'];
+    if (data.length != 3 ||
+        enabled is! bool ||
+        minutes is! int || minutes < 0 || minutes >= 24 * 60 ||
+        days is! int || days < 1 || days > maxRetentionDays) {
+      throw const FormatException('备份设置无效或包含不支持的设置');
+    }
+    return BackupSettings(
+      reminderEnabled: enabled,
+      reminderMinutes: minutes,
+      retentionDays: days,
+    );
+  }
+}
+
+class DecodedBackup {
+  const DecodedBackup(this.records, this.settings);
+  final List<ResearchRecord> records;
+  final BackupSettings? settings;
+}
+
+String encodeBackup(List<ResearchRecord> records, {BackupSettings? settings}) {
+  final version = settings == null ? 3 : 4;
+  return jsonEncode({
+    'version': version,
+    'schemaVersion': version,
+    'exportedAt': DateTime.now().toUtc().toIso8601String(),
+    'settings': settings?.toJson() ?? <String, dynamic>{},
+    'records': records.map((r) => r.toJson()).toList(),
+  });
+}
+
+List<ResearchRecord> decodeBackup(String source) =>
+    decodeBackupData(source).records;
+
+DecodedBackup decodeBackupData(String source) {
   final data = jsonDecode(source) as Map<String, dynamic>;
   final version = data['version'];
-  if ((version != 1 && version != 2 && version != 3) ||
+  if ((version != 1 && version != 2 && version != 3 && version != 4) ||
       data['records'] is! List) {
     throw const FormatException('备份格式或版本不支持');
   }
@@ -373,9 +422,12 @@ List<ResearchRecord> decodeBackup(String source) {
   if (version != 1 && DateTime.tryParse(data['exportedAt'] as String) == null) {
     throw const FormatException('备份时间无效');
   }
-  if (version != 1 && (data['settings'] as Map).isNotEmpty) {
+  if (version != 1 && version != 4 && (data['settings'] as Map).isNotEmpty) {
     throw const FormatException('备份包含当前版本不支持的设置');
   }
+  final settings = version == 4
+      ? BackupSettings.fromJson(data['settings'] as Map)
+      : null;
   DateTime checkedDate(Object? value) {
     if (value is! String) throw const FormatException('日期格式不正确');
     final match = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(value);
@@ -453,7 +505,7 @@ List<ResearchRecord> decodeBackup(String source) {
     }
     checked.addAll(path);
   }
-  return records;
+  return DecodedBackup(records, settings);
 }
 
 ResearchRecord rescheduleTask(

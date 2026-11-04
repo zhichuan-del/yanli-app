@@ -2,13 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'daily_reminder.dart';
+import 'backup_reminder.dart';
 import 'demo_records.dart';
 import 'domain.dart';
 import 'progress_search.dart';
@@ -318,6 +319,117 @@ class _MentorStatusMenuEntryState extends State<_MentorStatusMenuEntry> {
           ),
         ),
       ),
+    ),
+  );
+}
+
+class _MentorPlanDialog extends StatefulWidget {
+  const _MentorPlanDialog({
+    required this.title,
+    required this.date,
+    required this.onSave,
+  });
+
+  final String title;
+  final DateTime date;
+  final Future<String?> Function(String title, DateTime date) onSave;
+
+  @override
+  State<_MentorPlanDialog> createState() => _MentorPlanDialogState();
+}
+
+class _MentorPlanDialogState extends State<_MentorPlanDialog> {
+  late final TextEditingController title;
+  late DateTime date;
+  String? error;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    title = TextEditingController(text: widget.title);
+    date = dayOnly(widget.date);
+  }
+
+  @override
+  void dispose() {
+    title.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    final value = title.text.trim();
+    if (value.isEmpty) {
+      setState(() => error = '计划标题不能为空');
+      return;
+    }
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    final failure = await widget.onSave(value, date);
+    if (!mounted) return;
+    if (failure == null) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() {
+        saving = false;
+        error = failure;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !saving,
+    child: AlertDialog(
+      title: const Text('转为计划'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              key: const ValueKey('mentor-plan-title'),
+              controller: title,
+              enabled: !saving,
+              decoration: const InputDecoration(labelText: '计划标题'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const ValueKey('mentor-plan-date'),
+              onPressed: saving ? null : () async {
+                final first = DateTime(2000);
+                final last = DateTime(2100, 12, 31);
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: date,
+                  firstDate: date.isBefore(first) ? date : first,
+                  lastDate: date.isAfter(last) ? date : last,
+                );
+                if (picked != null && mounted) setState(() => date = picked);
+              },
+              icon: const Icon(Icons.calendar_today_outlined, size: 17),
+              label: Text('计划日期：${dateLabel(date)}'),
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 8),
+              Text(error!, style: const TextStyle(color: calendarRed)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: saving ? null : () => Navigator.of(context).pop(false),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          key: const ValueKey('mentor-plan-confirm'),
+          onPressed: saving ? null : save,
+          child: Text(saving ? '保存中…' : '确认转为计划'),
+        ),
+      ],
     ),
   );
 }
@@ -846,19 +958,70 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     ));
   }
 
+  Future<void> planAction(ResearchRecord discussion, MentorAction action) async {
+    if (restoring || dataReadFailed) return;
+    final linked = records.where(
+      (item) => item.sourceDiscussionId == discussion.id &&
+          item.sourceMentorActionId == action.id,
+    );
+    if (linked.isNotEmpty) {
+      await edit(RecordKind.task, record: linked.first);
+      return;
+    }
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _MentorPlanDialog(
+        title: action.text,
+        date: selected,
+        onSave: (title, date) async {
+          if (restoring || dataReadFailed) return '当前无法保存，请稍后重试';
+          final current = records.where((item) => item.id == discussion.id).firstOrNull;
+          final currentAction = current?.mentorActions
+              .where((item) => item.id == action.id).firstOrNull;
+          if (current == null || current.kind != RecordKind.mentor || currentAction == null) {
+            return '来源事项已不存在，请取消后重新查看';
+          }
+          if (records.any((item) => item.sourceDiscussionId == current.id &&
+              item.sourceMentorActionId == currentAction.id)) {
+            return '该事项已有对应计划，请取消后查看关联计划';
+          }
+          final updated = planMentorAction(
+            records, current, currentAction.copyWith(text: title), date, DateTime.now(),
+          );
+          return await commitRecords(updated) ? null : '转计划失败，请重试';
+        },
+      ),
+    );
+    if (saved == true && mounted) snack('已转为计划，可从计划返回原交流');
+  }
+
   Future<void> remove(ResearchRecord r) async {
     if (restoring) return;
     if (dataReadFailed) {
       snack('原始数据读取失败，请先恢复备份');
       return;
     }
+    final current = records.where((item) => item.id == r.id).firstOrNull;
+    if (current == null) return;
+    final deletion = RecordDeletion(records, current);
+    final linkedPlans = deletion.affected.where((item) => item.sourceDiscussionId == current.id).length;
+    final linkedDiscussions = deletion.affected.where((item) => item.previousDiscussionId == current.id).length;
+    final hasLinks = current.sourceDiscussionId != null || linkedPlans > 0 || linkedDiscussions > 0;
     final yes = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('删除这条记录？'),
-        content: Text(
-          '删除“${r.title}”后可在回收站恢复，保留 $retentionDays 天。'
-          '${records.any((record) => record.previousDiscussionId == r.id) ? '其他交流的关联将被移除，但其正文会保留。' : ''}',
+        content: SingleChildScrollView(
+          child: Text(
+            '删除“${current.title}”后可在回收站恢复，保留 $retentionDays 天。'
+            '${current.sourceDiscussionId != null ? '\n导师交流及对应跟进事项保留，事项状态不变；计划在回收站期间不再同步，可再次将该事项转为计划。' : ''}'
+            '${current.kind == RecordKind.mentor && current.mentorActions.isNotEmpty ? '\n该交流中的跟进事项将随交流一起移入回收站。' : ''}'
+            '${linkedPlans > 0 ? '\n$linkedPlans 项关联计划会保留，内容和状态不变，但与交流及事项的关联将解除，状态不再同步。' : ''}'
+            '${linkedDiscussions > 0 ? '\n$linkedDiscussions 条后续交流的上次交流关联将被移除，正文保留。' : ''}'
+            '${current.sourceDiscussionId != null ? '\n恢复成功时若来源不存在或事项已有其他计划，旧计划将不再关联原事项；即使关联恢复，状态也可能因期间更改而不一致，之后修改状态时才会重新同步。' : ''}'
+            '${hasLinks ? '\n恢复时，关联也可能因后续编辑等原因无法恢复。' : ''}',
+          ),
         ),
         actions: [
           TextButton(
@@ -873,7 +1036,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ),
     );
     if (yes == true && mounted) {
-      final deletion = RecordDeletion(records, r);
+      final latest = records.where((item) => item.id == current.id).firstOrNull;
+      final before = deletion.affected.map((item) => jsonEncode(item.toJson())).toList()..sort();
+      final after = latest == null ? <String>[] :
+          (RecordDeletion(records, latest).affected.map((item) => jsonEncode(item.toJson())).toList()..sort());
+      if (latest == null || jsonEncode(latest.toJson()) != jsonEncode(current.toJson()) ||
+          !listEquals(before, after) || restoring || dataReadFailed) {
+        snack('记录或关联已更新，请重新确认删除');
+        return;
+      }
       final entry = TrashedRecord(deletion, DateTime.now().toUtc());
       if (await commitRecords(
         deletion.apply(records),
@@ -1271,6 +1442,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       },
     ));
   }
+  String currentBackup() => encodeBackup(
+    records,
+    settings: BackupSettings(
+      reminderEnabled: reminderEnabled,
+      reminderMinutes: reminderMinutesAfterMidnight,
+      retentionDays: retentionDays,
+    ),
+  );
+
   Future<void> restore() async {
     final source = await showDialog<String>(
       context: context,
@@ -1281,15 +1461,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> restoreSource(String source) async {
-    late final List<ResearchRecord> restored;
+    late final DecodedBackup backup;
     try {
-      restored = decodeBackup(
+      backup = decodeBackupData(
         source.startsWith('\ufeff') ? source.substring(1) : source,
       );
     } catch (_) {
       snack('备份内容无效，当前数据未更改');
       return;
     }
+    var restoreSettings = backup.settings != null;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -1297,8 +1478,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         return StatefulBuilder(
           builder: (dialogContext, setDialogState) => AlertDialog(
             title: const Text('确认恢复备份？'),
-            content: Text(
-              '备份包含 ${restored.length} 条记录。恢复会替换当前 ${records.length} 条记录，并永久清空本地回收站。独立草稿保留，旧记录草稿需核对冲突。请先复制或导出当前备份，再确认覆盖。',
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '备份包含 ${backup.records.length} 条记录。恢复会替换当前 ${records.length} 条记录，并永久清空本地回收站。独立草稿保留，旧记录草稿需核对冲突。请先复制或导出当前备份，再确认覆盖。',
+                  ),
+                  if (backup.settings != null)
+                    CheckboxListTile(
+                      key: const ValueKey('restore-backup-settings'),
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('同时恢复提醒和回收站设置'),
+                      subtitle: Text(
+                        '提醒${backup.settings!.reminderEnabled ? '开启' : '关闭'}，时间 ${TimeOfDay(hour: backup.settings!.reminderMinutes ~/ 60, minute: backup.settings!.reminderMinutes % 60).format(dialogContext)}；回收站保留 ${backup.settings!.retentionDays} 天。',
+                      ),
+                      value: restoreSettings,
+                      onChanged: (value) => setDialogState(() => restoreSettings = value ?? false),
+                    )
+                  else
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text('此备份不含设置，恢复时将保留当前设置。'),
+                    ),
+                ],
+              ),
             ),
             actions: [
               TextButton(
@@ -1308,7 +1513,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ClipboardData(
                         text: dataReadFailed
                             ? (rawStoredData ?? '')
-                            : encodeBackup(records),
+                            : currentBackup(),
                       ),
                     );
                     if (dialogContext.mounted) {
@@ -1341,7 +1546,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       mime: 'application/json',
                       content: dataReadFailed
                           ? (rawStoredData ?? '')
-                          : encodeBackup(records),
+                          : currentBackup(),
                     );
                     if (saved && dialogContext.mounted) {
                       setDialogState(() => backedUp = true);
@@ -1381,13 +1586,49 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       },
     );
     if (confirmed != true || !mounted) return;
-    final success = await commitRecords(
-      restored,
-      allowRecovery: true,
-      replacementTrash: [],
-    );
-    if (!mounted) return;
-    snack(success ? '备份已恢复' : '恢复未确认成功，请检查当前数据和备份');
+    ScaffoldMessenger.of(context).clearSnackBars();
+    if (restoreSettings && (!reminderSettingsReady || reminderBusy)) {
+      snack('提醒设置尚未就绪，请稍后重新恢复备份');
+      return;
+    }
+    if (restoreSettings) setState(() => reminderBusy = true);
+    try {
+      final success = await commitRecords(
+        backup.records,
+        allowRecovery: true,
+        replacementTrash: [],
+        replacementDays: restoreSettings ? backup.settings!.retentionDays : null,
+      );
+      if (!mounted) return;
+      if (!success) {
+        snack('恢复未确认成功，请检查当前数据和备份');
+        return;
+      }
+      if (!restoreSettings) {
+        snack('备份已恢复，当前设置未更改');
+        return;
+      }
+      setState(() => restoring = true);
+      final result = await restoreReminderSettings(
+        prefs: widget.prefs,
+        scheduler: reminderScheduler,
+        settings: backup.settings!,
+      );
+      if (!mounted) return;
+      setState(() {
+        reminderEnabled = result.enabled;
+        reminderMinutesAfterMidnight = result.minutes;
+        reminderError = result.warning;
+      });
+      snack(result.warning == null ? '备份和设置已恢复' : '记录及回收站设置已恢复；${result.warning}');
+    } finally {
+      if (mounted && restoreSettings) {
+        setState(() {
+          reminderBusy = false;
+          restoring = false;
+        });
+      }
+    }
   }
 
   Future<void> importBackupFile() async {
@@ -1697,10 +1938,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget weekCalendar(Map<DateTime, Set<RecordKind>> visibleRecords) {
     final start = weekStart(selected);
     final today = dayOnly(DateTime.now());
+    final compactWeek = MediaQuery.textScalerOf(context).scale(12) > 24;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: panel(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+        padding: EdgeInsets.fromLTRB(12, compactWeek ? 0 : 12, 12, 12),
         child: Column(
           children: [
             Row(
@@ -1740,7 +1982,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 final date = start.add(Duration(days: index));
                 final active = date == selected;
                 final isToday = date == today;
-                final hasRecords = visibleRecords.containsKey(date);
+                final kinds = visibleRecords[date] ?? <RecordKind>{};
                 final weekday = ['一', '二', '三', '四', '五', '六', '日'][index];
                 return Expanded(
                   child: Semantics(
@@ -1750,24 +1992,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     label:
                         '${date.month}月${date.day}日，星期$weekday'
                         '${isToday ? '，今天' : ''}'
-                        '${hasRecords ? '，有记录' : ''}',
+                        '${kinds.isNotEmpty ? '，有记录' : ''}'
+                        '${calendarRecordKindSemantics(kinds)}',
                     child: ExcludeSemantics(
                       child: InkWell(
+                        key: ValueKey(
+                          'calendar-week-day-${date.year}-${date.month}-${date.day}',
+                        ),
                         borderRadius: BorderRadius.circular(14),
                         onTap: () => selectDate(date),
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          padding: EdgeInsets.symmetric(
+                            vertical: compactWeek ? 1 : 4,
+                          ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(
-                                weekday,
-                                style: const TextStyle(
-                                  color: muted,
-                                  fontSize: 13,
+                              FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  weekday,
+                                  style: const TextStyle(
+                                    color: muted,
+                                    fontSize: 13,
+                                  ),
                                 ),
                               ),
-                              const SizedBox(height: 4),
+                              SizedBox(height: compactWeek ? 2 : 4),
                               Container(
                                 constraints: const BoxConstraints(
                                   minWidth: 34,
@@ -1783,31 +2034,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                       : Colors.transparent,
                                   borderRadius: BorderRadius.circular(100),
                                 ),
-                                child: Text(
-                                  '${date.day}',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: active
-                                        ? Colors.white
-                                        : isToday
-                                        ? calendarRed
-                                        : ink,
-                                    fontWeight: active || isToday
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    '${date.day}',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: active
+                                          ? Colors.white
+                                          : isToday
+                                          ? calendarRed
+                                          : ink,
+                                      fontWeight: active || isToday
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                    ),
                                   ),
                                 ),
                               ),
-                              const SizedBox(height: 4),
-                              Container(
-                                width: 5,
-                                height: 5,
-                                decoration: BoxDecoration(
-                                  color: hasRecords
-                                      ? muted
-                                      : Colors.transparent,
-                                  shape: BoxShape.circle,
-                                ),
+                              SizedBox(height: compactWeek ? 2 : 4),
+                              CalendarRecordMarkers(
+                                date: date,
+                                kinds: kinds,
+                                keyPrefix: 'calendar-week-marker',
                               ),
                             ],
                           ),
@@ -1817,6 +2066,48 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   ),
                 );
               }),
+            ),
+            CalendarMarkerLegend(
+              keyPrefix: 'calendar-week',
+              compact: true,
+              onLayout: (legendContext) {
+                // Leave room for the legend without restricting later sheet drags.
+                if (!mounted || !agendaController.isAttached) return;
+                final legend = legendContext.findRenderObject();
+                RenderBox? ancestorStack;
+                legendContext.visitAncestorElements((element) {
+                  final widget = element.widget;
+                  if (widget is Stack &&
+                      widget.children.any((child) => child is DraggableScrollableSheet)) {
+                    final renderObject = element.findRenderObject();
+                    if (renderObject is RenderBox) {
+                      ancestorStack = renderObject;
+                      return false;
+                    }
+                  }
+                  return true;
+                });
+                final stack = ancestorStack;
+                if (legend is! RenderBox ||
+                    !legend.hasSize ||
+                    stack == null ||
+                    !stack.hasSize ||
+                    stack.size.height == 0) {
+                  return;
+                }
+                final legendBottom = legend.localToGlobal(
+                  Offset(0, legend.size.height),
+                ).dy;
+                final stackTop = stack.localToGlobal(Offset.zero).dy;
+                final maxSheetSize =
+                    (stack.size.height - (legendBottom - stackTop) - 8) /
+                    stack.size.height;
+                if (maxSheetSize < agendaController.size) {
+                  agendaController.jumpTo(
+                    maxSheetSize.clamp(.18, agendaController.size),
+                  );
+                }
+              },
             ),
           ],
         ),
@@ -2335,39 +2626,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     TextButton(
                                       onPressed: restoring || dataReadFailed
                                           ? null
-                                          : () async {
-                                              final linked = records.where(
-                                                (item) =>
-                                                    item.sourceDiscussionId ==
-                                                        r.id &&
-                                                    item.sourceMentorActionId ==
-                                                        action.id,
-                                              );
-                                              if (linked.isNotEmpty) {
-                                                await edit(
-                                                  RecordKind.task,
-                                                  record: linked.first,
-                                                );
-                                              } else {
-                                                final success =
-                                                    await commitRecords(
-                                                      planMentorAction(
-                                                        records,
-                                                        r,
-                                                        action,
-                                                        selected,
-                                                        DateTime.now(),
-                                                      ),
-                                                    );
-                                                if (mounted) {
-                                                  snack(
-                                                    success
-                                                        ? '已转为计划，可从计划返回原交流'
-                                                        : '转计划失败，请重试',
-                                                  );
-                                                }
-                                              }
-                                            },
+                                          : () => planAction(r, action),
                                       child: Text(
                                         records.any(
                                               (item) =>
@@ -2841,7 +3100,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 8),
               const Text(
-                '数据保存在当前设备。备份仅包含有效记录，不含回收站和草稿；恢复会清空回收站，保留独立草稿并检查冲突。清空数据会同时清除草稿。',
+                '数据保存在当前设备。备份包含有效记录、提醒设置和回收站保留时间，不含回收站内容、记录编辑草稿和总结草稿；恢复会清空回收站并保留草稿，记录草稿需检查冲突。清空记录会同时清除记录编辑草稿。',
                 style: TextStyle(color: muted, height: 1.5, fontSize: 13),
               ),
               const SizedBox(height: 14),
@@ -2870,7 +3129,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ClipboardData(
                             text: dataReadFailed
                                 ? (rawStoredData ?? '')
-                                : encodeBackup(records),
+                                : currentBackup(),
                           ),
                         );
                         if (mounted) {
@@ -2904,7 +3163,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       mime: 'application/json',
                       content: dataReadFailed
                           ? (rawStoredData ?? '')
-                          : encodeBackup(records),
+                          : currentBackup(),
                     ),
                     icon: const Icon(Icons.file_upload_outlined),
                     label: Text(dataReadFailed ? '导出原始数据' : '导出备份文件'),

@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'domain.dart';
 
-const maxRetentionDays = 3650;
+const maxRetentionDays = BackupSettings.maxRetentionDays;
 
 bool isValidRetentionDays(Object? days) =>
     days is int && days >= 1 && days <= maxRetentionDays;
